@@ -1,12 +1,13 @@
-[project]
-name = "simple-test-project"
+[tool.poetry]
+name = "simple test project"
 version = "0.1.0"
-description = "Add your description here"
-readme = "README.md"
-requires-python = ">=3.12"
-dependencies = [
-    "dask>=2025.3.0",
-    "mlflow>=2.21.3",
-    "ray>=2.44.1",
-    "torch>=2.6.0",
-]
+description = ""
+authors = ["Your Name <you@example.com>"]
+
+[tool.poetry.dependencies]
+python = "^3.13"
+ray = "2.44.1"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
