@@ -96,7 +96,7 @@ X = np.array([[1], [2], [3], [4], [5]])
 y = np.array([2, 4, 6, 8, 10])
 
 # Initialize MLflow experiment and start a run on the client
-mlflow.set_experiment("ray_mlflow_logging_demo")
+mlflow.set_experiment("ray_mlflow_cde_demo")
 
 # Get the current MLflow tracking URI and start the run
 tracking_uri = mlflow.get_tracking_uri()

@@ -1,0 +1,39 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  name: run-multiple-hellos # Or use generateName: run-multiple-hellos-
+spec:
+  entrypoint: main-dag
+  serviceAccountName: ci-service-account
+
+  ttlStrategy:
+    secondsAfterCompletion: 300 # Workflow will be deleted 300 seconds (5 minutes) after completion
+
+  templates:
+    - name: main-dag
+      dag:
+        tasks:
+          - name: say-hello-world # First hello task
+            template: say-message # Use the parameterized template
+            arguments:
+              parameters:
+                - name: message-to-echo # This name matches the input parameter of 'say-message'
+                  value: "Hello World! This is the first message."
+
+          - name: say-hello-argo # Second hello task
+            template: say-message # Use the parameterized template again
+            arguments:
+              parameters:
+                - name: message-to-echo # Pass a different value for the message
+                  value: "Hello Argo! This is a different greeting."
+
+    - name: say-message # This template is now parameterized
+      inputs:
+        parameters:
+          - name: message-to-echo # Define an input parameter for the message
+      container:
+        image: registry.ra.se:5002/hello:latest # Assuming this image has 'echo'
+                                                 # or is a general-purpose image like alpine/busybox
+                                                 # where 'echo' is available.
+        command: ["echo"] # We explicitly use the echo command
+        args: ["{{inputs.parameters.message-to-echo}}"] # And pass the parameterized message as its argument

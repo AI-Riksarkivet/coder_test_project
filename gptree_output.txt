@@ -1,0 +1,408 @@
+# Project Directory Structure:
+.
+├── .gptree_config
+├── .python-version
+├── LICENSE
+├── README.md
+├── build.sh
+├── build.yaml
+├── dockerfile
+├── gptree_output.txt
+├── inference.py
+├── main.py
+├── more.py
+├── pyproject.toml
+├── requirements_runtime.txt
+├── run.sh
+├── run.yaml
+├── test.sh
+└── uv.lock
+
+# BEGIN FILE CONTENTS
+
+# File: run.sh
+
+#!/bin/bash
+
+echo "Submitting workflow..."
+# Submit the workflow and capture its generated name.
+# The '-o name' flag ensures that only the workflow name is printed to stdout on success.
+WORKFLOW_NAME=$(argo submit run.yaml --generate-name "my-workflow-" -n ci -o name)
+SUBMIT_EXIT_CODE=$? # Capture the exit code of the argo submit command
+
+# Check if 'argo submit' itself failed
+if [ $SUBMIT_EXIT_CODE -ne 0 ]; then
+  echo "Error: 'argo submit' command failed with exit code $SUBMIT_EXIT_CODE."
+  # WORKFLOW_NAME variable might contain error output from argo submit in this case if it wrote to stdout.
+  echo "Debug output from argo submit (if any): $WORKFLOW_NAME"
+  exit 1 # Exit script with failure
+fi
+
+# Check if WORKFLOW_NAME is empty (e.g., if '-o name' produced no output even on exit code 0)
+if [ -z "$WORKFLOW_NAME" ]; then
+  echo "Error: 'argo submit' seemed to succeed but did not return a workflow name."
+  exit 1 # Exit script with failure
+fi
+
+# Optional: A more robust check to ensure the workflow was actually created
+# This helps catch edge cases where 'argo submit -o name' might succeed but the workflow isn't retrievable.
+if ! argo get "$WORKFLOW_NAME" -n ci > /dev/null 2>&1; then
+    echo "Error: Workflow '$WORKFLOW_NAME' was reported as submitted but cannot be found with 'argo get'."
+    echo "This might indicate an issue with the submission or RBAC permissions."
+    exit 1
+fi
+
+echo "Workflow submitted with generated name: $WORKFLOW_NAME"
+
+echo "Following logs for $WORKFLOW_NAME..."
+# This will stream logs. If you Ctrl+C here, the script will continue to the 'argo wait' part.
+# If the workflow's logged pods complete, 'argo logs --follow' should also exit.
+argo logs --follow "$WORKFLOW_NAME" -n ci
+LOGS_FOLLOW_EXIT_CODE=$?
+
+echo "Finished following logs (argo logs exit code: $LOGS_FOLLOW_EXIT_CODE)."
+echo "Now waiting for workflow $WORKFLOW_NAME to complete and checking its final status..."
+
+# Wait for the workflow to complete.
+# `argo wait` will exit with 0 if the workflow Succeeded, and non-zero if it Failed or Errored.
+if argo wait "$WORKFLOW_NAME" -n ci; then
+  echo "Workflow $WORKFLOW_NAME completed successfully."
+
+  exit 0 # Exit script with success
+else
+  WAIT_EXIT_CODE=$? # Capture the exit code of 'argo wait'
+  echo "Error: Workflow $WORKFLOW_NAME did not complete successfully (argo wait exit code: $WAIT_EXIT_CODE)."
+
+  ERROR_MESSAGE=$(argo get "$WORKFLOW_NAME" -n ci -o jsonpath='{.status.message}' 2>/dev/null || echo "N/A")
+
+  echo "Final status: $FINAL_STATUS"
+  echo "Message: $ERROR_MESSAGE"
+
+  echo "Fetching last few lines of logs for potentially failed steps in $WORKFLOW_NAME..."
+  # This provides a quick look at logs, especially if --follow was interrupted or didn't catch the error.
+  argo logs "$WORKFLOW_NAME" -n ci --tail 50 # Show last 50 lines
+
+  exit 1 # Exit script with failure
+fi
+
+# END FILE CONTENTS
+
+
+# File: run.yaml
+
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  name: run-multiple-hellos # Or use generateName: run-multiple-hellos-
+spec:
+  entrypoint: main-dag
+  serviceAccountName: ci-service-account
+
+  ttlStrategy:
+    secondsAfterCompletion: 300 # Workflow will be deleted 300 seconds (5 minutes) after completion
+
+  templates:
+    - name: main-dag
+      dag:
+        tasks:
+          - name: say-hello-world # First hello task
+            template: say-message # Use the parameterized template
+            arguments:
+              parameters:
+                - name: message-to-echo # This name matches the input parameter of 'say-message'
+                  value: "Hello World! This is the first message."
+
+          - name: say-hello-argo # Second hello task
+            template: say-message # Use the parameterized template again
+            arguments:
+              parameters:
+                - name: message-to-echo # Pass a different value for the message
+                  value: "Hello Argo! This is a different greeting."
+
+    - name: say-message # This template is now parameterized
+      inputs:
+        parameters:
+          - name: message-to-echo # Define an input parameter for the message
+      container:
+        image: registry.ra.se:5002/hello:latest # Assuming this image has 'echo'
+                                                 # or is a general-purpose image like alpine/busybox
+                                                 # where 'echo' is available.
+        command: ["echo"] # We explicitly use the echo command
+        args: ["{{inputs.parameters.message-to-echo}}"] # And pass the parameterized message as its argument
+
+# END FILE CONTENTS
+
+
+# File: pyproject.toml
+
+[project]
+name = "hello-world-python"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "dask>=2025.3.0",
+    "mlflow>=2.21.3",
+    "ray>=2.44.1",
+    "torch>=2.6.0",
+]
+
+
+# END FILE CONTENTS
+
+
+# File: build.sh
+
+#!/bin/bash
+
+echo "Submitting workflow..."
+WORKFLOW_NAME=$(argo submit build.yaml --generate-name "my-workflow-" -p dockerfileContent="$(cat dockerfile)" -n ci -o name)
+
+if [ -z "$WORKFLOW_NAME" ]; then
+  echo "Failed to submit workflow or capture its name."
+  exit 1
+fi
+
+echo "Workflow submitted with: $WORKFLOW_NAME"
+
+echo "Following logs for $WORKFLOW_NAME..."
+argo logs --follow "$WORKFLOW_NAME" -n ci
+
+# END FILE CONTENTS
+
+
+# File: main.py
+
+import mlflow
+import mlflow.pytorch
+import ray
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import logging
+import os
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Initialize Ray (can connect to an existing cluster)
+# ray.init(address="auto") # Use this to connect to a cluster
+ray.init() # For local testing
+
+# Define a remote function that logs to MLflow
+@ray.remote
+def train_model_and_log(X, y, tracking_uri, run_id):
+    import mlflow # Import inside the function as it runs in a new process
+    import mlflow.pytorch
+    import torch
+    import torch.nn as nn
+    import torch.optim as optim
+    import logging
+
+    logger = logging.getLogger(__name__)
+    logger.info(f"Ray task starting for run_id: {run_id}")
+
+    # Convert numpy arrays to PyTorch tensors
+    X_tensor = torch.tensor(X, dtype=torch.float32)
+    y_tensor = torch.tensor(y, dtype=torch.float32).view(-1, 1)
+
+    # Define a simple linear regression model
+    class LinearModel(nn.Module):
+        def __init__(self):
+            super(LinearModel, self).__init__()
+            self.linear = nn.Linear(1, 1)  # Input and output dimensions
+
+        def forward(self, x):
+            return self.linear(x)
+
+    model = LinearModel()
+
+    # Define loss function and optimizer
+    criterion = nn.MSELoss()
+    optimizer = optim.SGD(model.parameters(), lr=0.01)
+
+    # Training loop
+    num_epochs = 100
+    for epoch in range(num_epochs):
+        # Forward pass
+        outputs = model(X_tensor)
+        loss = criterion(outputs, y_tensor)
+
+        # Backward pass and optimization
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+    # Set the tracking URI and start/get the existing run
+    mlflow.set_tracking_uri(tracking_uri)
+    with mlflow.start_run(run_id=run_id) as run:
+        logger.info("Inside MLflow run context in Ray task.")
+
+        # Log parameters/metrics from within the task
+        mlflow.log_param("ray_task_completed", "true")
+        mlflow.log_metric("loss_from_task", loss.item())
+
+        # Log system information
+        mlflow.log_param("os_platform", os.name)
+        mlflow.log_param("python_version", os.environ.get('PYTHON_VERSION', 'unknown'))
+        mlflow.log_param("ray_version", ray.__version__)
+        mlflow.log_param("torch_version", torch.__version__)
+        mlflow.log_param("numpy_version", np.__version__)
+
+        # Example: Create a small artifact file from the task
+        task_artifact_content = f"Task finished. Model weight: {model.linear.weight.item()}, bias: {model.linear.bias.item()}"
+        with open("task_info.txt", "w") as f:
+            f.write(task_artifact_content)
+        mlflow.log_artifact("task_info.txt")
+        logger.info("Logged task_info.txt artifact from Ray task.")
+
+        # Log the model with an input example
+        input_example = torch.tensor([[1.0]], dtype=torch.float32)
+        # Convert PyTorch tensor to NumPy array
+        input_example_np = input_example.clone().detach().numpy()
+        mlflow.pytorch.log_model(model, "model_from_task", input_example=input_example_np)
+
+    logger.info(f"Ray task finished for run_id: {run_id}")
+    return model
+
+# Create a simple dataset
+X = np.array([[1], [2], [3], [4], [5]])
+y = np.array([2, 4, 6, 8, 10])
+
+# Initialize MLflow experiment and start a run on the client
+mlflow.set_experiment("ray_mlflow_cde_demo")
+
+# Get the current MLflow tracking URI and start the run
+tracking_uri = mlflow.get_tracking_uri()
+print(f"MLflow tracking URI: {tracking_uri}")
+
+with mlflow.start_run() as run:
+    run_id = run.info.run_id
+    print(f"Started MLflow run with ID: {run_id}")
+
+    # Log initial parameters on the client
+    mlflow.log_param("dataset_size", len(X))
+
+    # Log system information
+    mlflow.log_param("os_platform", os.name)
+    mlflow.log_param("python_version", os.environ.get('PYTHON_VERSION', 'unknown'))
+    mlflow.log_param("ray_version", ray.__version__)
+    mlflow.log_param("torch_version", torch.__version__)
+    mlflow.log_param("numpy_version", np.__version__)
+
+    # Submit the Ray task, passing tracking info
+    model_ref = train_model_and_log.remote(X, y, tracking_uri, run_id)
+
+    # Get the result (optional, depending on your workflow)
+    model = ray.get(model_ref)
+
+    # Test the model
+    test_X = torch.tensor([[6], [7]], dtype=torch.float32)
+    predictions = model(test_X)
+    print(f"Predictions for test data: {predictions.detach().numpy()}")
+
+    # Log metrics/parameters on the client after getting results
+    test_y = np.array([12, 14]).reshape(-1, 1)
+    test_loss = nn.MSELoss()(model(test_X.clone().detach()), 
+                             torch.tensor(test_y, dtype=torch.float32))
+    mlflow.log_metric("test_loss_client", test_loss.item())
+
+    print("MLflow run completed successfully.")
+
+# Shutdown Ray
+ray.shutdown()
+
+
+# END FILE CONTENTS
+
+
+# File: dockerfile
+
+# Dockerfile
+
+# Use an official Python runtime as a parent image
+# We choose a -slim variant for a smaller image size, compatible with python>=3.12
+FROM python:3.12-slim
+
+# Set the working directory in the container
+WORKDIR /app
+
+# Install build tools that might be needed by some Python packages (e.g., for compiling C extensions)
+# and then install uv.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install --no-cache-dir --upgrade pip setuptools \
+    && pip install --no-cache-dir uv
+
+# Copy the pyproject.toml file first to leverage Docker layer caching for dependencies
+COPY pyproject.toml .
+
+# Install Python dependencies using uv from pyproject.toml
+# The command `uv pip install .` will install the current project (defined by pyproject.toml)
+# and its dependencies listed in the [project.dependencies] section.
+# Using --no-cache to reduce image size.
+# Note: Ensure the versions in pyproject.toml are available.
+# The futuristic versions (e.g., dask>=2025.3.0) might cause issues if not actually released.
+RUN uv pip install --no-cache .
+
+# Copy the rest of the application code
+# For this example, it's just main.py
+COPY main.py .
+# If you had other Python modules or a package structure, you'd copy them here.
+# For example: COPY src/ .
+
+# Command to run the application
+# This will execute 'python main.py' when the container starts
+CMD ["python", "main.py"]
+
+# END FILE CONTENTS
+
+
+# File: build.yaml
+
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  name: kaniko-build
+spec:
+  serviceAccountName: ci-service-account
+  entrypoint: kaniko-build
+  arguments:
+    parameters:
+      - name: dockerfileContent 
+  templates:
+    - name: kaniko-build
+      dag:
+        tasks:
+          - name: build-image
+            template: kaniko
+            arguments:
+              artifacts:
+                - name: dockerfile 
+                  raw:
+                    data: "{{workflow.parameters.dockerfileContent}}"
+    - name: kaniko
+      inputs:
+        artifacts:
+          - name: dockerfile 
+            path: /workspace/Dockerfile 
+      container:
+        image: registry.ra.se:5002/gcr.io/kaniko-project/executor:latest 
+        command: ["/kaniko/executor"]
+        args:
+          - --context=dir:///workspace
+          - --dockerfile=/workspace/Dockerfile
+          - --destination=registry.ra.se:5002/hello:latest
+          - --insecure
+        volumeMounts:
+          - name: workspace
+            mountPath: /workspace
+      volumes:
+        - name: workspace
+          emptyDir: {}
+
+# END FILE CONTENTS

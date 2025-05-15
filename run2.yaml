@@ -1,0 +1,63 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  name: kaniko-build # generateName: kaniko-build- will be used by the script
+spec:
+  serviceAccountName: ci-service-account # Ensure this service account has permissions for Kaniko
+  entrypoint: kaniko-build-entry
+  arguments:
+    parameters:
+      - name: dockerfileContent
+        description: "The content of the Dockerfile."
+      - name: pyprojectTomlContent
+        description: "The content of pyproject.toml."
+      - name: mainPyContent
+        description: "The content of main.py."
+      # Add more parameters here if you need to pass other files
+
+  templates:
+    - name: kaniko-build-entry
+      dag:
+        tasks:
+          - name: build-image
+            template: kaniko-template
+            arguments:
+              artifacts:
+                - name: dockerfile-artifact # This name must match an input artifact in kaniko-template
+                  raw:
+                    data: "{{workflow.parameters.dockerfileContent}}"
+                - name: pyproject-toml-artifact # New artifact for pyproject.toml
+                  raw:
+                    data: "{{workflow.parameters.pyprojectTomlContent}}"
+                - name: main-py-artifact # New artifact for main.py
+                  raw:
+                    data: "{{workflow.parameters.mainPyContent}}"
+                # If you add more files, create corresponding raw artifacts here
+
+    - name: kaniko-template
+      inputs:
+        artifacts:
+          - name: dockerfile-artifact # Receives the Dockerfile content
+            path: /workspace/Dockerfile # Materializes as Dockerfile in /workspace
+          - name: pyproject-toml-artifact # Receives pyproject.toml content
+            path: /workspace/pyproject.toml # Materializes as pyproject.toml in /workspace
+          - name: main-py-artifact # Receives main.py content
+            path: /workspace/main.py # Materializes as main.py in /workspace
+          # If you add more files, define their paths here
+      container:
+        # Ensure you are using a Kaniko image that your cluster can pull.
+        # The official gcr.io/kaniko-project/executor:latest is common.
+        # Your original YAML used registry.ra.se:5002/gcr.io/kaniko-project/executor:latest
+        image: gcr.io/kaniko-project/executor:latest # Using official, adjust if you have a local mirror
+        command: ["/kaniko/executor"]
+        args:
+          - --context=dir:///workspace # The build context is the /workspace directory
+          - --dockerfile=/workspace/Dockerfile # Path to the Dockerfile within the context
+          - --destination=registry.ra.se:5002/hello:latest # Your target image registry and tag
+          - --insecure # If your registry is HTTP or uses self-signed certs. Remove if not needed.
+          # - --cache=true # Optional: enable Kaniko layer caching to a remote repository
+          # - --cache-repo=registry.ra.se:5002/kaniko-cache # Example cache repo
+        # No need for volumeMounts or volumes if using dir:///workspace with raw artifacts,
+        # as Kaniko will use an implicit emptyDir for /workspace.
+        # If you were using a persistent volume for context, you'd mount it.
+        # For this raw artifact approach, the inputs.artifacts.path handles placing files.
