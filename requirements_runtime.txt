@@ -17,7 +17,7 @@ deprecated==1.2.18
 docker==7.1.0
 fastapi==0.115.12
 filelock==3.18.0
-flask==3.1.0
+flask==3.1.1
 fonttools==4.57.0
 frozenlist==1.6.0
 fsspec==2025.3.2
